@@ -8,9 +8,9 @@ final class TouchOverlay: NSView {
     var enabled = false {
         didSet { allowedTouchTypes = enabled ? [.indirect] : [] }
     }
-    var onBegin: ((CGPoint, CGFloat) -> Void)?
-    var onMove: ((CGPoint) -> Void)?
-    var onEnd: (() -> Void)?
+    var onBegin: ((CGPoint, CGFloat, TimeInterval) -> Void)?
+    var onMove: ((CGPoint, TimeInterval) -> Void)?
+    var onEnd: ((TimeInterval) -> Void)?
     var onCancel: (() -> Void)?
     var onScroll: ((CGFloat, CGFloat) -> Void)?
     var onMagnify: ((CGFloat) -> Void)?
@@ -61,25 +61,25 @@ final class TouchOverlay: NSView {
               let t = event.touches(matching: .began, in: self).first else { return }
         activeID = t.identity
         let size = t.deviceSize
-        onBegin?(t.normalizedPosition, size.height > 0 ? size.width / size.height : 1.6)
+        onBegin?(t.normalizedPosition, size.height > 0 ? size.width / size.height : 1.6, event.timestamp)
     }
     override func touchesMoved(with event: NSEvent) {
         guard enabled, let t = find(.moved, event) else { return }
-        onMove?(t.normalizedPosition)
+        onMove?(t.normalizedPosition, event.timestamp)
     }
     override func touchesEnded(with event: NSEvent) {
         defer { clearMultiIfLifted(event) }
         guard find(.ended, event) != nil else { return }
         activeID = nil
-        onEnd?()
+        onEnd?(event.timestamp)
     }
     override func touchesCancelled(with event: NSEvent) {
         defer { clearMultiIfLifted(event) }
         guard find(.cancelled, event) != nil else { return }
         activeID = nil
-        onEnd?()
+        onEnd?(event.timestamp)
     }
-    func reset() { multi = false; if activeID != nil { activeID = nil; onEnd?() } }
+    func reset() { multi = false; if activeID != nil { activeID = nil; onEnd?(0) } }
 }
 
 /// Web view that turns trackpad pinches into board zoom instead of page zoom.
@@ -124,13 +124,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
         overlay = TouchOverlay(frame: .zero)
         overlay.autoresizingMask = [.width, .height]
-        overlay.onBegin = { [weak self] p, aspect in
-            self?.js(String(format: "__tablet.begin(%.5f,%.5f,%.4f)", p.x, p.y, aspect))
+        overlay.onBegin = { [weak self] p, aspect, t in
+            self?.js(String(format: "__tablet.begin(%.5f,%.5f,%.4f,%.5f)", p.x, p.y, aspect, t))
         }
-        overlay.onMove = { [weak self] p in
-            self?.js(String(format: "__tablet.move(%.5f,%.5f)", p.x, p.y))
+        overlay.onMove = { [weak self] p, t in
+            self?.js(String(format: "__tablet.move(%.5f,%.5f,%.5f)", p.x, p.y, t))
         }
-        overlay.onEnd = { [weak self] in self?.js("__tablet.end()") }
+        overlay.onEnd = { [weak self] t in self?.js(String(format: "__tablet.end(%.5f)", t)) }
         overlay.onCancel = { [weak self] in self?.js("__tablet.cancel()") }
         overlay.onScroll = { [weak self] dx, dy in
             self?.js(String(format: "__view.panBy(%.2f,%.2f)", dx, dy))
