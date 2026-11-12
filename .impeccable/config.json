@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "monotonous-spacing",
+        "value": "*",
+        "files": [
+          "index.html"
+        ],
+        "createdAt": "2026-11-11T05:56:34.469Z",
+        "reason": "Claude judged false positive: toolbar groups are separated by dividers, and spacing already varies (4/6/8/14/16/18px) between tight groups and floating panels"
+      }
+    ]
+  }
+}

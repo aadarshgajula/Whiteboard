@@ -1,0 +1,847 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glide Whiteboard</title>
+<style>
+  :root {
+    --bg: #fbfaf7;
+    --dot: #d6d2c8;
+    --rule: #e4e0d7;
+    --ink: #1f2328;
+    --panel: rgba(255, 255, 255, 0.92);
+    --panel-border: rgba(0, 0, 0, 0.08);
+    --muted: #6b6f76;
+    --accent: #2f6fed;
+    --live: #e5484d;
+    --shadow: 0 8px 30px rgba(0, 0, 0, 0.10), 0 1px 3px rgba(0, 0, 0, 0.08);
+    --gs: 24px; --gx: 0px; --gy: 0px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background-color: var(--bg);
+    background-size: var(--gs) var(--gs);
+    background-position: var(--gx) var(--gy);
+    font: 13px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    color: var(--ink);
+    user-select: none;
+    -webkit-user-select: none;
+    overscroll-behavior: none;
+  }
+  /* Paper styles; the pattern moves and scales with the board */
+  body.paper-dots  { background-image: radial-gradient(circle at 1px 1px, var(--dot) 1.1px, transparent 1.3px); }
+  body.paper-grid  { background-image: linear-gradient(var(--rule) 1px, transparent 1px), linear-gradient(90deg, var(--rule) 1px, transparent 1px); }
+  body.paper-lines { background-image: linear-gradient(transparent calc(var(--gs) - 1px), var(--rule) calc(var(--gs) - 1px)); }
+  body.paper-plain { background-image: none; }
+
+  canvas#board {
+    position: fixed; inset: 0;
+    width: 100vw; height: 100vh;
+    cursor: none;
+    touch-action: none;
+  }
+
+  /* Custom cursor that shows brush size and pen state */
+  #cursor {
+    position: fixed; left: 0; top: 0;
+    pointer-events: none;
+    border-radius: 50%;
+    border: 1.5px dashed var(--muted);
+    transform: translate(-100px, -100px);
+    z-index: 5;
+    transition: border-color .12s, background-color .12s;
+  }
+  #cursor.live { border-style: solid; border-color: var(--live); }
+  #cursor.eraser { border-color: #888; background: rgba(255,255,255,.6); }
+  #cursor.hidden { display: none; }
+
+  /* Finger-tracking area: the part of the board your trackpad maps onto */
+  #pad {
+    position: fixed;
+    border: 1.5px dashed rgba(47,111,237,.45);
+    border-radius: 18px;
+    background: rgba(47,111,237,.025);
+    pointer-events: none;
+    z-index: 1;
+    display: none;
+  }
+  #pad.on { display: block; }
+  #pad::after {
+    content: 'Trackpad area';
+    position: absolute; left: 12px; top: 8px;
+    font-size: 11px; color: rgba(47,111,237,.7);
+  }
+
+  /* Status pill */
+  #status {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 14px 7px 11px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 999px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(10px);
+    font-weight: 500;
+    z-index: 10;
+    pointer-events: none;
+    white-space: nowrap;
+    max-width: calc(100vw - 32px);
+    overflow: hidden;
+  }
+  #status .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  #status.live .dot { background: var(--live); box-shadow: 0 0 0 4px rgba(229,72,77,.18); }
+  #status.tablet .dot { background: var(--accent); box-shadow: 0 0 0 4px rgba(47,111,237,.18); }
+  #status .hint { color: var(--muted); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
+
+  /* Toolbar */
+  #toolbar {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(10px);
+    z-index: 10;
+    max-width: calc(100vw - 24px);
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .sep { width: 1px; height: 26px; background: var(--panel-border); margin: 0 4px; }
+  button {
+    font: inherit; color: inherit;
+    border: none; background: transparent;
+    height: 34px; min-width: 34px; padding: 0 9px;
+    border-radius: 10px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    cursor: pointer;
+  }
+  button:hover { background: rgba(0,0,0,.05); }
+  button.active { background: rgba(47,111,237,.12); color: var(--accent); }
+  button svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  #penToggle { font-weight: 600; padding: 0 12px; min-width: 112px; }
+  #penToggle.live { background: var(--live); color: #fff; }
+  #penToggle.live:hover { background: #d63c41; }
+  #fingerToggle.on { background: var(--accent); color: #fff; }
+  #zoomBtn { min-width: 54px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .swatch {
+    width: 22px; height: 22px; min-width: 22px; padding: 0;
+    border-radius: 50%;
+    border: 2px solid #fff;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.15);
+  }
+  .swatch:hover { background: var(--c); transform: scale(1.1); }
+  .swatch.active { box-shadow: 0 0 0 2px var(--accent); }
+
+  .size { display: flex; align-items: center; gap: 6px; padding: 0 4px; }
+  .size input { width: 84px; accent-color: var(--accent); }
+  .size output { width: 22px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* Help panel */
+  #help {
+    position: fixed; right: 16px; top: 16px;
+    width: 290px;
+    max-height: calc(100vh - 110px);
+    overflow: auto;
+    padding: 14px 16px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(10px);
+    z-index: 11;
+  }
+  #help.hidden { display: none; }
+  #help h2 { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 6px; }
+  #help h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 14px 0 6px; }
+  #help p { margin: 0 0 4px; color: var(--muted); }
+  #help dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; }
+  #help dt { white-space: nowrap; }
+  #help dd { margin: 0; color: var(--muted); }
+  kbd {
+    display: inline-block; min-width: 20px; padding: 1px 6px;
+    font: 11px/18px ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-align: center;
+    background: #fff; border: 1px solid #d6d6d6; border-bottom-width: 2px; border-radius: 5px;
+  }
+  #help .close { position: absolute; right: 6px; top: 6px; height: 26px; min-width: 26px; }
+  #help .version { margin-top: 14px; font-size: 11px; color: var(--muted); }
+  #help .version:empty { display: none; }
+</style>
+</head>
+<body class="paper-dots">
+<canvas id="board"></canvas>
+<div id="pad"></div>
+<div id="cursor" class="hidden"></div>
+
+<div id="status"><span class="dot"></span><span id="statusText">Paused</span><span class="hint" id="statusHint">· tap or press D to draw</span></div>
+
+<div id="help">
+  <button class="close" id="helpClose" title="Close">✕</button>
+  <h2>Draw by gliding</h2>
+  <p>Once the pen is down, moving your finger on the trackpad draws. You don't need to click and drag.</p>
+
+  <h3>Writing</h3>
+  <dl>
+    <dt><kbd>T</kbd></dt><dd>Finger tracking: the trackpad becomes the page, and lifting your finger makes a space (Mac app only)</dd>
+    <dt><kbd>Enter</kbd></dt><dd>In finger tracking, start a new line just below what you wrote</dd>
+    <dt>Tap / <kbd>D</kbd></dt><dd>Lower or lift the pen</dd>
+    <dt><kbd>Space</kbd> hold</dt><dd>Lift the pen while held</dd>
+    <dt><kbd>Esc</kbd></dt><dd>Lift the pen / leave finger tracking</dd>
+  </dl>
+
+  <h3>Moving around</h3>
+  <dl>
+    <dt>Two fingers</dt><dd>Scroll around the board (it never runs out)</dd>
+    <dt>Pinch</dt><dd>Zoom in to write bigger, out to see everything</dd>
+    <dt><kbd>⌘=</kbd> <kbd>⌘-</kbd></dt><dd>Zoom in / out</dd>
+    <dt><kbd>⌘0</kbd></dt><dd>Back to 100%</dd>
+    <dt><kbd>N</kbd></dt><dd>New line (works in any mode)</dd>
+  </dl>
+
+  <h3>Tools</h3>
+  <dl>
+    <dt><kbd>P</kbd> / <kbd>E</kbd></dt><dd>Pen / eraser</dd>
+    <dt><kbd>1</kbd>–<kbd>7</kbd></dt><dd>Pick a color</dd>
+    <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Smaller / bigger brush</dd>
+    <dt><kbd>G</kbd></dt><dd>Paper: dots, graph, ruled lines, plain</dd>
+    <dt><kbd>⌘Z</kbd> <kbd>⇧⌘Z</kbd></dt><dd>Undo / redo</dd>
+    <dt><kbd>⌘S</kbd></dt><dd>Save the whole board as a PNG</dd>
+    <dt><kbd>⌘⌫</kbd></dt><dd>Clear the board</dd>
+    <dt><kbd>?</kbd></dt><dd>Show / hide this panel</dd>
+  </dl>
+  <div class="version" id="version" data-v="__VERSION__"></div>
+</div>
+
+<div id="toolbar">
+  <button id="penToggle" title="Lower or lift the pen (D)">Pen up</button>
+  <button id="fingerToggle" title="Finger tracking: the trackpad becomes the page (T)">
+    <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="14" cy="11" r="2"/></svg>Finger
+  </button>
+  <div class="sep"></div>
+  <button id="toolPen" class="active" title="Pen (P)">
+    <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+  </button>
+  <button id="toolEraser" title="Eraser (E)">
+    <svg viewBox="0 0 24 24"><path d="m7 21-4.3-4.3a1 1 0 0 1 0-1.4l10-10a1 1 0 0 1 1.4 0l5.6 5.6a1 1 0 0 1 0 1.4L11 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>
+  </button>
+  <div class="sep"></div>
+  <div id="swatches" style="display:flex;gap:6px;align-items:center"></div>
+  <div class="sep"></div>
+  <label class="size" title="Brush size ([ and ])">
+    <input id="size" type="range" min="1" max="40" value="4">
+    <output id="sizeOut">4</output>
+  </label>
+  <div class="sep"></div>
+  <button id="paperBtn" title="Paper style (G)"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M4 15h16M10 4v16M15 4v16"/></svg></button>
+  <button id="zoomBtn" title="Zoom: pinch, or ⌘= / ⌘-. Click to reset (⌘0)">100%</button>
+  <button id="newLine" title="New line below your work (Enter in finger tracking, or N)"><svg viewBox="0 0 24 24"><path d="M20 5v7a3 3 0 0 1-3 3H5"/><path d="m9 11-4 4 4 4"/></svg></button>
+  <div class="sep"></div>
+  <button id="undo" title="Undo (⌘Z)"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+  <button id="redo" title="Redo (⇧⌘Z)"><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
+  <button id="clear" title="Clear (⌘⌫)"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg></button>
+  <button id="save" title="Save the whole board as PNG (⌘S)"><svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg></button>
+  <button id="helpBtn" title="Shortcuts (?)">?</button>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('board');
+  const ctx = canvas.getContext('2d');
+  const cursorEl = document.getElementById('cursor');
+  const statusEl = document.getElementById('status');
+  const statusText = document.getElementById('statusText');
+  const statusHint = document.getElementById('statusHint');
+  const penToggle = document.getElementById('penToggle');
+  const fingerBtn = document.getElementById('fingerToggle');
+  const padEl = document.getElementById('pad');
+  const sizeInput = document.getElementById('size');
+  const sizeOut = document.getElementById('sizeOut');
+  const zoomBtn = document.getElementById('zoomBtn');
+  const helpEl = document.getElementById('help');
+
+  const COLORS = ['#1f2328', '#e5484d', '#f76b15', '#f5b400', '#30a46c', '#2f6fed', '#8e4ec6'];
+  const PAPERS = { dots: 24, grid: 24, lines: 40, plain: 24 };   // spacing in board units
+  const SMOOTHING = 0.5;   // 0..1, lower = smoother but laggier
+  const MIN_DIST = 1.2;    // ignore tiny jitter (screen px)
+  const MIN_ZOOM = 0.1, MAX_ZOOM = 8;
+  const STORAGE_KEY = 'glide-whiteboard-v1';
+  const VIEW_KEY = 'glide-whiteboard-view-v1';
+
+  const state = {
+    armed: false,        // pen lowered by the user
+    spaceHeld: false,    // temporary lift
+    inside: false,       // pointer over canvas
+    tablet: false,       // finger-tracking mode (Mac app)
+    touching: false,     // finger on trackpad in tablet mode
+    padAspect: 1.6,      // trackpad width / height
+    tool: 'pen',
+    color: COLORS[0],
+    size: 4,
+    paper: 'dots',
+  };
+
+  // The board is endless. view.x/y is the board point at the window's top-left; view.s is the zoom.
+  const view = { x: 0, y: 0, s: 1 };
+  const toWorld = (p) => ({ x: p.x / view.s + view.x, y: p.y / view.s + view.y });
+
+  let strokes = [];       // stored in board coordinates
+  let redoStack = [];
+  let current = null;     // stroke being drawn
+  let smooth = null;      // smoothed pointer position (screen)
+  let dpr = 1;
+
+  // ---------- Rendering ----------
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(innerWidth * dpr);
+    canvas.height = Math.round(innerHeight * dpr);
+    redraw();
+    layoutPad();
+  }
+
+  function applyStyle(c, s) {
+    c.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
+    c.strokeStyle = s.color;
+    c.fillStyle = s.color;
+    c.lineWidth = s.size;
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+  }
+
+  const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+
+  function renderStroke(c, s) {
+    const pts = s.points;
+    if (!pts.length) return;
+    applyStyle(c, s);
+    if (pts.length === 1) {
+      c.beginPath();
+      c.arc(pts[0].x, pts[0].y, s.size / 2, 0, Math.PI * 2);
+      c.fill();
+      return;
+    }
+    c.beginPath();
+    c.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length - 1; i++) {
+      const m = mid(pts[i], pts[i + 1]);
+      c.quadraticCurveTo(pts[i].x, pts[i].y, m.x, m.y);
+    }
+    const last = pts[pts.length - 1];
+    c.lineTo(last.x, last.y);
+    c.stroke();
+  }
+
+  // Draw only the newest piece of the active stroke
+  function renderTail(s) {
+    const pts = s.points, n = pts.length;
+    applyStyle(ctx, s);
+    ctx.beginPath();
+    if (n === 2) {
+      const m = mid(pts[0], pts[1]);
+      ctx.moveTo(pts[0].x, pts[0].y);
+      ctx.lineTo(m.x, m.y);
+    } else {
+      const a = mid(pts[n - 3], pts[n - 2]);
+      const b = mid(pts[n - 2], pts[n - 1]);
+      ctx.moveTo(a.x, a.y);
+      ctx.quadraticCurveTo(pts[n - 2].x, pts[n - 2].y, b.x, b.y);
+    }
+    ctx.stroke();
+  }
+
+  function redraw() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const k = dpr * view.s;
+    ctx.setTransform(k, 0, 0, k, -view.x * k, -view.y * k);
+    for (const s of strokes) renderStroke(ctx, s);
+    if (current) renderStroke(ctx, current);
+  }
+
+  // ---------- Paper ----------
+  function updatePaper() {
+    let sp = PAPERS[state.paper] * view.s;
+    while (sp < 10) sp *= 2;            // keep the pattern from turning into mush when zoomed out
+    const mod = (a, n) => ((a % n) + n) % n;
+    const b = document.body.style;
+    b.setProperty('--gs', sp + 'px');
+    b.setProperty('--gx', mod(-view.x * view.s, sp) + 'px');
+    b.setProperty('--gy', mod(-view.y * view.s, sp) + 'px');
+  }
+
+  function setPaper(p) {
+    state.paper = p;
+    document.body.className = 'paper-' + p;
+    updatePaper();
+    persistView();
+  }
+  function cyclePaper() {
+    const keys = Object.keys(PAPERS);
+    setPaper(keys[(keys.indexOf(state.paper) + 1) % keys.length]);
+    flash('Paper: ' + { dots: 'dots', grid: 'graph', lines: 'ruled lines', plain: 'plain' }[state.paper]);
+  }
+
+  // ---------- View (pan / zoom) ----------
+  let viewSaveTimer = 0;
+  function viewChanged() {
+    redraw();
+    updatePaper();
+    zoomBtn.textContent = Math.round(view.s * 100) + '%';
+    clearTimeout(viewSaveTimer);
+    viewSaveTimer = setTimeout(persistView, 300);
+  }
+
+  function panBy(dx, dy) {
+    if (current && !state.tablet) endStroke();
+    view.x += dx / view.s;
+    view.y += dy / view.s;
+    viewChanged();
+  }
+
+  // Zoom keeping the board point under (sx, sy) fixed on screen
+  function zoomAt(factor, sx, sy) {
+    if (current) endStroke();
+    if (sx == null || sx < 0) {
+      if (state.tablet) { sx = padRect.x + padRect.w / 2; sy = padRect.y + padRect.h / 2; }
+      else { sx = innerWidth / 2; sy = innerHeight / 2; }
+    }
+    const ns = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, view.s * factor));
+    const w = toWorld({ x: sx, y: sy });
+    view.s = ns;
+    view.x = w.x - sx / ns;
+    view.y = w.y - sy / ns;
+    viewChanged();
+  }
+  const resetZoom = () => zoomAt(1 / view.s);
+
+  // Scroll so a fresh line starts just below the lowest writing on screen
+  function nextLine() {
+    endStroke();
+    const topY = state.tablet ? padRect.y : 70;
+    const viewBottom = view.y + innerHeight / view.s;
+    let maxY = -Infinity;
+    for (const s of strokes) {
+      if (s.tool === 'eraser') continue;
+      for (const p of s.points) {
+        if (p.y >= view.y && p.y <= viewBottom && p.y + s.size / 2 > maxY) maxY = p.y + s.size / 2;
+      }
+    }
+    if (maxY === -Infinity) return;
+    view.y = maxY - (topY + 18) / view.s;
+    viewChanged();
+  }
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
+    if (e.ctrlKey) zoomAt(Math.exp(-e.deltaY * unit * 0.01), e.clientX, e.clientY);  // pinch in Chrome
+    else panBy(e.deltaX * unit, e.deltaY * unit);
+  }, { passive: false });
+
+  // Pinch in Safari (the Mac app handles pinch natively and calls __view.zoomAt)
+  let gestureScale = 1;
+  window.addEventListener('gesturestart', (e) => { e.preventDefault(); gestureScale = 1; });
+  window.addEventListener('gesturechange', (e) => {
+    e.preventDefault();
+    zoomAt(e.scale / gestureScale, e.clientX, e.clientY);
+    gestureScale = e.scale;
+  });
+  window.addEventListener('gestureend', (e) => e.preventDefault());
+
+  window.__view = {
+    zoomAt: (f, x, y) => zoomAt(f, x, y),
+    panBy: (dx, dy) => panBy(dx, dy),
+  };
+
+  // ---------- Pen state ----------
+  const isLive = () => !state.tablet && state.armed && !state.spaceHeld && state.inside;
+
+  let flashTimer = 0;
+  function flash(msg) {
+    statusText.textContent = msg;
+    statusHint.textContent = '';
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(updateUI, 1400);
+  }
+
+  function updateUI() {
+    const live = isLive() || (state.tablet && state.touching);
+    statusEl.classList.toggle('live', !state.tablet && state.armed && !state.spaceHeld);
+    statusEl.classList.toggle('tablet', state.tablet);
+    fingerBtn.classList.toggle('on', state.tablet);
+    if (state.tablet) {
+      statusText.textContent = state.tool === 'eraser' ? 'Finger tracking · eraser' : 'Finger tracking';
+      statusHint.textContent = '· lift for spaces · Enter = new line · two fingers scroll · Esc exits';
+    } else if (state.armed && state.spaceHeld) {
+      statusText.textContent = 'Lifted';
+      statusHint.textContent = '· let go of Space to draw again';
+    } else if (state.armed) {
+      statusText.textContent = state.tool === 'eraser' ? 'Erasing' : 'Drawing';
+      statusHint.textContent = '· glide to draw, tap or press D to lift';
+    } else {
+      statusText.textContent = 'Paused';
+      statusHint.textContent = '· tap or press D to draw · T for finger tracking';
+    }
+    penToggle.classList.toggle('live', state.armed);
+    penToggle.textContent = state.armed ? '● Pen down' : 'Pen up';
+
+    cursorEl.classList.toggle('live', live);
+    cursorEl.classList.toggle('eraser', state.tool === 'eraser');
+    const d = Math.max(8, state.size + 2);
+    cursorEl.style.width = cursorEl.style.height = d + 'px';
+    cursorEl.style.marginLeft = cursorEl.style.marginTop = (-d / 2) + 'px';
+  }
+
+  function endStroke() {
+    if (!current) return;
+    if (current.points.length) {
+      strokes.push(current);
+      redoStack = [];
+      redraw();          // finish the tail segment precisely
+      persist();
+    }
+    current = null;
+    smooth = null;
+  }
+
+  function cancelStroke() {
+    current = null;
+    smooth = null;
+    redraw();
+  }
+
+  function setArmed(v) {
+    if (state.armed === v) return;
+    state.armed = v;
+    if (!v) endStroke();
+    updateUI();
+  }
+
+  function setSpace(v) {
+    if (state.spaceHeld === v) return;
+    state.spaceHeld = v;
+    if (v) endStroke();
+    updateUI();
+  }
+
+  // ---------- Pointer input ----------
+  // raw is in screen pixels; points are stored in board coordinates
+  function addPoint(raw) {
+    if (!smooth) {
+      smooth = { x: raw.x, y: raw.y };
+    } else {
+      smooth.x += (raw.x - smooth.x) * SMOOTHING;
+      smooth.y += (raw.y - smooth.y) * SMOOTHING;
+    }
+    const w = toWorld(smooth);
+    if (!current) {
+      current = { tool: state.tool, color: state.color, size: state.size / view.s, points: [w] };
+      return;
+    }
+    const pts = current.points;
+    const last = pts[pts.length - 1];
+    if (Math.hypot(w.x - last.x, w.y - last.y) * view.s < MIN_DIST) return;
+    pts.push(w);
+    renderTail(current);
+  }
+
+  canvas.addEventListener('pointermove', (e) => {
+    if (state.tablet) return;
+    state.inside = true;
+    cursorEl.classList.remove('hidden');
+    cursorEl.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
+    if (!isLive()) return;
+    const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    for (const ev of (events.length ? events : [e])) addPoint({ x: ev.clientX, y: ev.clientY });
+  });
+
+  // ---------- Finger tracking (absolute trackpad position, Mac app only) ----------
+  const nativeTablet = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.tablet;
+  let padRect = { x: 0, y: 0, w: 0, h: 0 };
+
+  // Fit the trackpad's shape inside the free space between the status pill and the toolbar
+  function layoutPad() {
+    const top = 64, bottom = 86, side = 24;
+    const availW = innerWidth - side * 2, availH = innerHeight - top - bottom;
+    let w = availW, h = w / state.padAspect;
+    if (h > availH) { h = availH; w = h * state.padAspect; }
+    padRect = { x: (innerWidth - w) / 2, y: top + (availH - h) / 2, w, h };
+    Object.assign(padEl.style, { left: padRect.x + 'px', top: padRect.y + 'px', width: w + 'px', height: h + 'px' });
+  }
+
+  const padPoint = (nx, ny) => ({ x: padRect.x + nx * padRect.w, y: padRect.y + (1 - ny) * padRect.h });
+
+  function moveCursorTo(p) {
+    cursorEl.classList.remove('hidden');
+    cursorEl.style.transform = `translate(${p.x}px, ${p.y}px)`;
+  }
+
+  function toggleTablet() {
+    if (!nativeTablet) {
+      statusText.textContent = 'Finger tracking needs the Whiteboard Mac app';
+      statusHint.textContent = '· browsers can\'t read where your finger is';
+      clearTimeout(flashTimer);
+      flashTimer = setTimeout(updateUI, 2600);
+      return;
+    }
+    nativeTablet.postMessage(!state.tablet);   // the app replies via __tablet.setMode
+  }
+
+  // Called by the Mac app
+  window.__tablet = {
+    setMode(on) {
+      endStroke();
+      state.tablet = on;
+      state.touching = false;
+      if (on) setArmed(false);
+      padEl.classList.toggle('on', on);
+      layoutPad();
+      updateUI();
+    },
+    begin(nx, ny, aspect) {
+      if (!state.tablet) return;
+      if (aspect && Math.abs(aspect - state.padAspect) > 0.01) { state.padAspect = aspect; layoutPad(); }
+      endStroke();
+      state.touching = true;
+      const p = padPoint(nx, ny);
+      moveCursorTo(p);
+      addPoint(p);
+      updateUI();
+    },
+    move(nx, ny) {
+      if (!state.tablet || !state.touching) return;
+      const p = padPoint(nx, ny);
+      moveCursorTo(p);
+      addPoint(p);
+    },
+    end() {
+      if (!state.tablet) return;
+      state.touching = false;
+      endStroke();
+      updateUI();
+    },
+    // A second finger landed: that was a scroll or pinch, not writing
+    cancel() {
+      state.touching = false;
+      cancelStroke();
+      updateUI();
+    },
+  };
+
+  canvas.addEventListener('pointerenter', () => { state.inside = true; updateUI(); });
+  canvas.addEventListener('pointerleave', () => {
+    if (state.tablet) return;
+    state.inside = false;
+    endStroke();
+    cursorEl.classList.add('hidden');
+    updateUI();
+  });
+
+  // A tap (click with no drag) toggles the pen
+  let downAt = null;
+  canvas.addEventListener('pointerdown', (e) => { downAt = { x: e.clientX, y: e.clientY }; });
+  canvas.addEventListener('pointerup', (e) => {
+    if (!downAt || state.tablet) { downAt = null; return; }
+    const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
+    downAt = null;
+    if (moved < 5) {
+      // discard the few points drawn during the tap itself
+      if (state.armed && current && current.points.length < 4) { current = null; smooth = null; }
+      setArmed(!state.armed);
+      redraw();
+    }
+  });
+
+  window.addEventListener('blur', () => { setSpace(false); endStroke(); });
+
+  // ---------- Tools ----------
+  const swatchWrap = document.getElementById('swatches');
+  COLORS.forEach((c, i) => {
+    const b = document.createElement('button');
+    b.className = 'swatch' + (i === 0 ? ' active' : '');
+    b.style.background = c;
+    b.style.setProperty('--c', c);
+    b.title = `Color ${i + 1}`;
+    b.addEventListener('click', () => setColor(c));
+    swatchWrap.appendChild(b);
+  });
+
+  function setColor(c) {
+    state.color = c;
+    [...swatchWrap.children].forEach((b, i) => b.classList.toggle('active', COLORS[i] === c));
+    setTool('pen');
+  }
+
+  function setTool(t) {
+    endStroke();
+    state.tool = t;
+    document.getElementById('toolPen').classList.toggle('active', t === 'pen');
+    document.getElementById('toolEraser').classList.toggle('active', t === 'eraser');
+    updateUI();
+  }
+
+  function setSize(v) {
+    endStroke();
+    state.size = Math.max(1, Math.min(40, v));
+    sizeInput.value = state.size;
+    sizeOut.textContent = state.size;
+    updateUI();
+  }
+
+  function undo() {
+    endStroke();
+    if (!strokes.length) return;
+    redoStack.push(strokes.pop());
+    redraw(); persist();
+  }
+  function redo() {
+    endStroke();
+    if (!redoStack.length) return;
+    strokes.push(redoStack.pop());
+    redraw(); persist();
+  }
+  function clearBoard() {
+    endStroke();
+    if (!strokes.length) return;
+    if (!confirm('Clear the whole board?')) return;
+    strokes = []; redoStack = [];
+    view.x = 0; view.y = 0; view.s = 1;
+    viewChanged(); persist();
+  }
+
+  // Save every stroke on the board (not just what's on screen) as one PNG
+  function savePNG() {
+    endStroke();
+    if (!strokes.length) return flash('Nothing to save yet');
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const s of strokes) {
+      if (s.tool === 'eraser') continue;
+      const r = s.size / 2;
+      for (const p of s.points) {
+        minX = Math.min(minX, p.x - r); minY = Math.min(minY, p.y - r);
+        maxX = Math.max(maxX, p.x + r); maxY = Math.max(maxY, p.y + r);
+      }
+    }
+    if (minX === Infinity) return flash('Nothing to save yet');
+    const pad = 40;
+    minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+    const w = maxX - minX, h = maxY - minY;
+    const scale = Math.min(2, 12000 / Math.max(w, h));
+    const ink = document.createElement('canvas');
+    ink.width = Math.ceil(w * scale); ink.height = Math.ceil(h * scale);
+    const ic = ink.getContext('2d');
+    ic.setTransform(scale, 0, 0, scale, -minX * scale, -minY * scale);
+    for (const s of strokes) renderStroke(ic, s);
+
+    const out = document.createElement('canvas');
+    out.width = ink.width; out.height = ink.height;
+    const o = out.getContext('2d');
+    o.fillStyle = '#ffffff';
+    o.fillRect(0, 0, out.width, out.height);
+    o.drawImage(ink, 0, 0);
+    const a = document.createElement('a');
+    a.download = `whiteboard-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`;
+    a.href = out.toDataURL('image/png');
+    a.click();
+  }
+
+  penToggle.addEventListener('click', () => { if (state.tablet) toggleTablet(); setArmed(!state.armed); });
+  fingerBtn.addEventListener('click', toggleTablet);
+  document.getElementById('toolPen').addEventListener('click', () => setTool('pen'));
+  document.getElementById('toolEraser').addEventListener('click', () => setTool('eraser'));
+  sizeInput.addEventListener('input', () => setSize(+sizeInput.value));
+  document.getElementById('paperBtn').addEventListener('click', cyclePaper);
+  zoomBtn.addEventListener('click', resetZoom);
+  document.getElementById('newLine').addEventListener('click', nextLine);
+  document.getElementById('undo').addEventListener('click', undo);
+  document.getElementById('redo').addEventListener('click', redo);
+  document.getElementById('clear').addEventListener('click', clearBoard);
+  document.getElementById('save').addEventListener('click', savePNG);
+  const toggleHelp = () => helpEl.classList.toggle('hidden');
+  document.getElementById('helpBtn').addEventListener('click', toggleHelp);
+  document.getElementById('helpClose').addEventListener('click', toggleHelp);
+
+  // Keep keyboard focus off buttons so Space never "clicks" them
+  document.querySelectorAll('button, input').forEach(el =>
+    el.addEventListener('mouseup', () => setTimeout(() => el.blur(), 0)));
+
+  // ---------- Keyboard ----------
+  window.addEventListener('keydown', (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+    const k = e.key.toLowerCase();
+    if (e.code === 'Space') { e.preventDefault(); if (!e.repeat && !state.tablet) setSpace(true); return; }
+    if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+    if (mod && k === 'y') { e.preventDefault(); redo(); return; }
+    if (mod && k === 's') { e.preventDefault(); savePNG(); return; }
+    if (mod && (e.key === '=' || e.key === '+')) { e.preventDefault(); zoomAt(1.25); return; }
+    if (mod && e.key === '-') { e.preventDefault(); zoomAt(0.8); return; }
+    if (mod && e.key === '0') { e.preventDefault(); resetZoom(); return; }
+    if (mod && (e.key === 'Backspace' || e.key === 'Delete')) { e.preventDefault(); clearBoard(); return; }
+    if (mod || e.altKey) return;
+    // Mark our shortcuts as handled so the Mac app doesn't play the "unhandled key" beep
+    if (/^[dpetgn1-7\[\]\/?]$/.test(k) || e.key === 'Enter' || e.key === 'Escape') e.preventDefault();
+
+    if (k === 't') return toggleTablet();
+    if (state.tablet) {
+      if (e.key === 'Escape') return toggleTablet();
+      if (e.key === 'Enter') return nextLine();
+      if (k === 'd') return;
+    }
+    switch (e.key) {
+      case 'd': case 'D': case 'Enter': setArmed(!state.armed); break;
+      case 'Escape': setArmed(false); break;
+      case 'p': case 'P': setTool('pen'); break;
+      case 'e': case 'E': setTool(state.tool === 'eraser' ? 'pen' : 'eraser'); break;
+      case 'g': case 'G': cyclePaper(); break;
+      case 'n': case 'N': nextLine(); break;
+      case '[': setSize(state.size - (state.size > 10 ? 2 : 1)); break;
+      case ']': setSize(state.size + (state.size >= 10 ? 2 : 1)); break;
+      case '?': case '/': toggleHelp(); break;
+      default:
+        if (/^[1-7]$/.test(e.key)) setColor(COLORS[+e.key - 1]);
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); setSpace(false); }
+  });
+
+  // ---------- Persistence ----------
+  function persist() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(strokes)); } catch (_) {}
+  }
+  function persistView() {
+    try { localStorage.setItem(VIEW_KEY, JSON.stringify({ ...view, paper: state.paper })); } catch (_) {}
+  }
+  function restore() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) strokes = JSON.parse(raw) || [];
+      if (strokes.length) helpEl.classList.add('hidden');
+    } catch (_) { strokes = []; }
+    try {
+      const v = JSON.parse(localStorage.getItem(VIEW_KEY) || 'null');
+      if (v && isFinite(v.x) && isFinite(v.y) && v.s > 0) { view.x = v.x; view.y = v.y; view.s = v.s; }
+      if (v && PAPERS[v.paper]) state.paper = v.paper;
+    } catch (_) {}
+  }
+
+  // Version is filled in by build-app.sh; the plain browser copy shows nothing
+  const versionEl = document.getElementById('version');
+  if (!versionEl.dataset.v.includes('__')) versionEl.textContent = 'Version ' + versionEl.dataset.v;
+
+  window.addEventListener('resize', resize);
+  restore();
+  document.body.className = 'paper-' + state.paper;
+  resize();
+  viewChanged();
+  updateUI();
+})();
+</script>
+</body>
+</html>
